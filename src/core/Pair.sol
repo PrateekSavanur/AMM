@@ -19,9 +19,12 @@ contract Pair is ERC20, ReentrancyGuard {
     uint112 private reserve1;
     uint32  private blockTimestampLast;
 
-    uint256 public constant MINIMUM_LIQUIDITY = 1000; // locked forever to address(0)
-    uint256 public constant FEE_NUM = 997;   // 0.3% fee => 1000-3 = 997
-    uint256 public constant FEE_DEN = 1000;
+    // permanent lock of MINIMUM_LIQUIDITY to a non-zero burn address (OpenZeppelin forbids address(0))
+    address public constant BURN_ADDRESS = address(0x000000000000000000000000000000000000dEaD);
+
+    uint256 public constant MINIMUM_LIQUIDITY = 1000; // locked forever to BURN_ADDRESS
+    uint256 public constant FEE_NUM = 997;   // numerator for 0.3% fee
+    uint256 public constant FEE_DEN = 1000;  // denominator
 
     event Mint(address indexed sender, uint256 amount0, uint256 amount1);
     event Burn(address indexed sender, uint256 amount0, uint256 amount1, address indexed to);
@@ -55,6 +58,8 @@ contract Pair is ERC20, ReentrancyGuard {
     /// @notice Add liquidity; called by Router/externals which transfer tokens in first
     /// @dev Follows Uniswap V2 mint logic
     function mint(address to) external nonReentrant returns (uint256 liquidity) {
+        require(to != address(0), "Pair: INVALID_TO");
+
         (uint112 _reserve0, uint112 _reserve1,) = getReserves();
         uint256 balance0 = IERC20(token0).balanceOf(address(this));
         uint256 balance1 = IERC20(token1).balanceOf(address(this));
@@ -70,7 +75,8 @@ contract Pair is ERC20, ReentrancyGuard {
             // initial liquidity: mint sqrt(amount0 * amount1) - MINIMUM_LIQUIDITY
             liquidity = (amount0 * amount1).sqrt();
             require(liquidity > MINIMUM_LIQUIDITY, "Pair: INSUFFICIENT_LIQUIDITY_MINTED");
-            _mint(address(0), MINIMUM_LIQUIDITY); // permanently lock the minimum liquidity
+            // permanently lock the minimum liquidity to a non-zero burn address compatible with OpenZeppelin
+            _mint(BURN_ADDRESS, MINIMUM_LIQUIDITY);
             _mint(to, liquidity - MINIMUM_LIQUIDITY);
         } else {
             // mint proportional to existing supply
@@ -88,6 +94,8 @@ contract Pair is ERC20, ReentrancyGuard {
     /// @notice Remove liquidity and send tokens to `to`
     /// @dev Caller must have transferred LP tokens to this contract or router will handle burning
     function burn(address to) external nonReentrant returns (uint256 amount0, uint256 amount1) {
+        require(to != address(0), "Pair: INVALID_TO");
+
         uint256 _balance0 = IERC20(token0).balanceOf(address(this));
         uint256 _balance1 = IERC20(token1).balanceOf(address(this));
 
@@ -100,8 +108,8 @@ contract Pair is ERC20, ReentrancyGuard {
         require(amount0 > 0 && amount1 > 0, "Pair: INSUFFICIENT_LIQUIDITY_BURNED_AMOUNTS");
 
         _burn(address(this), liquidity);
-        require(IERC20(token0).transfer(to, amount0), "Pair: TRANSFER_FAILED_TOKEN0");
-        require(IERC20(token1).transfer(to, amount1), "Pair: TRANSFER_FAILED_TOKEN1");
+        _safeTransfer(token0, to, amount0);
+        _safeTransfer(token1, to, amount1);
 
         // refresh balances after transfer
         uint256 newBalance0 = IERC20(token0).balanceOf(address(this));
@@ -116,7 +124,9 @@ contract Pair is ERC20, ReentrancyGuard {
     /// @param amount1Out amount of token1 to send out
     /// @param to recipient address
     function swap(uint256 amount0Out, uint256 amount1Out, address to) external nonReentrant {
+        require(to != address(0), "Pair: INVALID_TO");
         require(amount0Out > 0 || amount1Out > 0, "Pair: INSUFFICIENT_OUTPUT_AMOUNT");
+
         (uint112 _reserve0, uint112 _reserve1,) = getReserves();
         require(amount0Out < _reserve0 && amount1Out < _reserve1, "Pair: INSUFFICIENT_LIQUIDITY");
 
@@ -131,14 +141,12 @@ contract Pair is ERC20, ReentrancyGuard {
 
         require(amount0In > 0 || amount1In > 0, "Pair: INSUFFICIENT_INPUT_AMOUNT");
 
-        // apply fee: ensure (balance0 * balance1) after fees >= (reserve0 * reserve1)
-        // Using Uniswap V2 style check with 0.3% fee
+        // apply fee & invariant check:
         uint256 balance0Adjusted = (balance0 * FEE_NUM) - (amount0In * (FEE_DEN - FEE_NUM));
         uint256 balance1Adjusted = (balance1 * FEE_NUM) - (amount1In * (FEE_DEN - FEE_NUM));
 
         require(balance0Adjusted * balance1Adjusted >= uint256(_reserve0) * uint256(_reserve1) * (FEE_NUM * FEE_NUM),
             "Pair: K");
-            // Note: multiply both sides by (FEE_NUM^2) to compare adjusted balances
 
         _update(uint112(balance0), uint112(balance1));
 
@@ -161,6 +169,7 @@ contract Pair is ERC20, ReentrancyGuard {
     }
 
     function _safeTransfer(address token, address to, uint256 value) internal {
+        require(to != address(0), "Pair: INVALID_TO");
         require(IERC20(token).transfer(to, value), "Pair: TRANSFER_FAILED");
     }
 }

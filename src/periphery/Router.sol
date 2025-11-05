@@ -16,8 +16,6 @@ interface IWETH {
 }
 
 contract Router is ReentrancyGuard {
-    using UniswapV2Library for address;
-
     address public immutable factory;
     address public immutable WETH;
 
@@ -28,53 +26,7 @@ contract Router is ReentrancyGuard {
     }
 
     receive() external payable {
-        // only accept ETH via WETH fallback
         require(msg.sender == WETH, "Router: ONLY_WETH");
-    }
-
-    // ----------------- INTERNAL HELPERS -----------------
-
-    /// @notice Ensure pair exists; create if missing
-    function _ensurePair(address tokenA, address tokenB) internal returns (address pair) {
-        pair = Factory(factory).getPair(tokenA, tokenB);
-        if (pair == address(0)) {
-            pair = Factory(factory).createPair(tokenA, tokenB);
-        }
-    }
-
-    /// @notice Refund any leftover ETH to `to`
-    function _refundETH(address to, uint256 amount) internal {
-        if (amount > 0) {
-            TransferHelper.safeTransferETH(to, amount);
-        }
-    }
-
-    /// @notice Internal swap loop that performs multi-hop swaps.
-    /// Splitting into an internal function reduces stack usage in public functions.
-    function _swap(uint256[] memory amounts, address[] calldata path, address _to) internal {
-        uint len = path.length;
-        for (uint i = 0; i < len - 1; i++) {
-            address input = path[i];
-            address output = path[i + 1];
-            address pair = UniswapV2Library.pairFor(factory, input, output);
-            require(pair != address(0), "Router: PAIR_NOT_EXIST_IN_PATH");
-
-            (address token0, ) = UniswapV2Library.sortTokens(input, output);
-            uint256 amountOut = amounts[i + 1];
-
-            uint256 amount0Out;
-            uint256 amount1Out;
-            if (input == token0) {
-                amount0Out = 0;
-                amount1Out = amountOut;
-            } else {
-                amount0Out = amountOut;
-                amount1Out = 0;
-            }
-
-            address recipient = (i < len - 2) ? UniswapV2Library.pairFor(factory, output, path[i + 2]) : _to;
-            Pair(pair).swap(amount0Out, amount1Out, recipient);
-        }
     }
 
     // ----------------- ADD / REMOVE LIQUIDITY -----------------
@@ -88,8 +40,10 @@ contract Router is ReentrancyGuard {
         uint256 deadline
     ) external nonReentrant returns (uint256 amountA, uint256 amountB, uint256 liquidity) {
         require(deadline >= block.timestamp, "Router: EXPIRED");
+        require(to != address(0), "Router: INVALID_TO");
 
-        address pair = _ensurePair(tokenA, tokenB);
+        address pair = UniswapV2Library.pairFor(factory, tokenA, tokenB);
+        require(pair != address(0), "Router: PAIR_NOT_EXIST");
 
         (uint256 reserveA, uint256 reserveB) = UniswapV2Library.getReserves(factory, tokenA, tokenB);
         if (reserveA == 0 && reserveB == 0) {
@@ -118,8 +72,10 @@ contract Router is ReentrancyGuard {
         uint256 deadline
     ) external payable nonReentrant returns (uint256 amountToken, uint256 amountETH, uint256 liquidity) {
         require(deadline >= block.timestamp, "Router: EXPIRED");
+        require(to != address(0), "Router: INVALID_TO");
 
-        address pair = _ensurePair(token, WETH);
+        address pair = UniswapV2Library.pairFor(factory, token, WETH);
+        require(pair != address(0), "Router: PAIR_NOT_EXIST");
 
         (uint256 reserveToken, uint256 reserveETH) = UniswapV2Library.getReserves(factory, token, WETH);
         if (reserveToken == 0 && reserveETH == 0) {
@@ -135,18 +91,15 @@ contract Router is ReentrancyGuard {
             }
         }
 
-        // transfer token to pair
         TransferHelper.safeTransferFrom(token, msg.sender, pair, amountToken);
 
-        // wrap ETH and transfer WETH to pair
         IWETH(WETH).deposit{value: amountETH}();
         TransferHelper.safeTransfer(WETH, pair, amountETH);
 
         liquidity = Pair(pair).mint(to);
 
-        // refund leftover ETH
         uint256 refund = msg.value - amountETH;
-        if (refund > 0) _refundETH(msg.sender, refund);
+        if (refund > 0) TransferHelper.safeTransferETH(msg.sender, refund);
     }
 
     function removeLiquidity(
@@ -157,20 +110,20 @@ contract Router is ReentrancyGuard {
         uint256 deadline
     ) external nonReentrant returns (uint256 amountA, uint256 amountB) {
         require(deadline >= block.timestamp, "Router: EXPIRED");
+        require(to != address(0), "Router: INVALID_TO");
+
         address pair = UniswapV2Library.pairFor(factory, tokenA, tokenB);
         require(pair != address(0), "Router: PAIR_NOT_EXIST");
 
-        // pull LP to pair, then burn -> sends tokens to this contract
         TransferHelper.safeTransferFrom(pair, msg.sender, pair, liquidity);
+
         (uint256 out0, uint256 out1) = Pair(pair).burn(address(this));
 
         (address token0, ) = UniswapV2Library.sortTokens(tokenA, tokenB);
         if (tokenA == token0) {
-            amountA = out0;
-            amountB = out1;
+            (amountA, amountB) = (out0, out1);
         } else {
-            amountA = out1;
-            amountB = out0;
+            (amountA, amountB) = (out1, out0);
         }
 
         TransferHelper.safeTransfer(tokenA, to, amountA);
@@ -184,6 +137,8 @@ contract Router is ReentrancyGuard {
         uint256 deadline
     ) external nonReentrant returns (uint256 amountToken, uint256 amountETH) {
         require(deadline >= block.timestamp, "Router: EXPIRED");
+        require(to != address(0), "Router: INVALID_TO");
+
         address pair = UniswapV2Library.pairFor(factory, token, WETH);
         require(pair != address(0), "Router: PAIR_NOT_EXIST");
 
@@ -192,21 +147,17 @@ contract Router is ReentrancyGuard {
 
         (address token0, ) = UniswapV2Library.sortTokens(token, WETH);
         if (token == token0) {
-            amountToken = out0;
-            amountETH = out1;
+            (amountToken, amountETH) = (out0, out1);
         } else {
-            amountToken = out1;
-            amountETH = out0;
+            (amountToken, amountETH) = (out1, out0);
         }
 
         TransferHelper.safeTransfer(token, to, amountToken);
-
-        // unwrap & send ETH
         IWETH(WETH).withdraw(amountETH);
         TransferHelper.safeTransferETH(to, amountETH);
     }
 
-    // ----------------- SWAP (token-token and ETH wrappers, multi-hop) -----------------
+    // ----------------- SWAP FUNCTIONS -----------------
 
     function swapExactTokensForTokens(
         uint256 amountIn,
@@ -216,6 +167,9 @@ contract Router is ReentrancyGuard {
         uint256 deadline
     ) external nonReentrant returns (uint256[] memory amounts) {
         require(deadline >= block.timestamp, "Router: EXPIRED");
+        require(path.length >= 2, "Router: INVALID_PATH");
+        require(to != address(0), "Router: INVALID_TO");
+
         amounts = UniswapV2Library.getAmountsOut(factory, amountIn, path);
         require(amounts[amounts.length - 1] >= amountOutMin, "Router: INSUFFICIENT_OUTPUT_AMOUNT");
 
@@ -227,7 +181,6 @@ contract Router is ReentrancyGuard {
         _swap(amounts, path, to);
     }
 
-    // ETH -> multi-hop tokens (path[0] must be WETH)
     function swapExactETHForTokens(
         uint256 amountOutMin,
         address[] calldata path,
@@ -237,23 +190,23 @@ contract Router is ReentrancyGuard {
         require(deadline >= block.timestamp, "Router: EXPIRED");
         require(path.length >= 2, "Router: INVALID_PATH");
         require(path[0] == WETH, "Router: FIRST_TOKEN_MUST_BE_WETH");
+        require(to != address(0), "Router: INVALID_TO");
 
         amounts = UniswapV2Library.getAmountsOut(factory, msg.value, path);
         require(amounts[amounts.length - 1] >= amountOutMin, "Router: INSUFFICIENT_OUTPUT_AMOUNT");
 
-        // wrap ETH -> WETH and send to first pair
         IWETH(WETH).deposit{value: amounts[0]}();
         address firstPair = UniswapV2Library.pairFor(factory, path[0], path[1]);
+        require(firstPair != address(0), "Router: FIRST_PAIR_MISSING");
+
         TransferHelper.safeTransfer(WETH, firstPair, amounts[0]);
 
         _swap(amounts, path, to);
 
-        // refund leftover ETH, if any
         uint256 refund = msg.value - amounts[0];
-        if (refund > 0) _refundETH(msg.sender, refund);
+        if (refund > 0) TransferHelper.safeTransferETH(msg.sender, refund);
     }
 
-    // Tokens -> ETH, multi-hop (last token in path must be WETH)
     function swapExactTokensForETH(
         uint256 amountIn,
         uint256 amountOutMin,
@@ -264,115 +217,49 @@ contract Router is ReentrancyGuard {
         require(deadline >= block.timestamp, "Router: EXPIRED");
         require(path.length >= 2, "Router: INVALID_PATH");
         require(path[path.length - 1] == WETH, "Router: LAST_TOKEN_MUST_BE_WETH");
+        require(to != address(0), "Router: INVALID_TO");
 
         amounts = UniswapV2Library.getAmountsOut(factory, amountIn, path);
         require(amounts[amounts.length - 1] >= amountOutMin, "Router: INSUFFICIENT_OUTPUT_AMOUNT");
 
-        // send input tokens to first pair
         address firstPair = UniswapV2Library.pairFor(factory, path[0], path[1]);
+        require(firstPair != address(0), "Router: PAIR_NOT_EXIST");
+
         TransferHelper.safeTransferFrom(path[0], msg.sender, firstPair, amounts[0]);
 
-        // perform swaps, final recipient is this router so we can unwrap
         _swap(amounts, path, address(this));
 
-        // unwrap final WETH to ETH and send to `to`
         uint256 amountWETH = amounts[amounts.length - 1];
         IWETH(WETH).withdraw(amountWETH);
         TransferHelper.safeTransferETH(to, amountWETH);
     }
 
-        /// @notice Spend up to `amountInMax` of path[0] to receive exactly `amountOut` of the last token
-    function swapTokensForExactTokens(
-        uint256 amountOut,
-        uint256 amountInMax,
-        address[] calldata path,
-        address to,
-        uint256 deadline
-    ) external nonReentrant returns (uint256[] memory amounts) {
-        require(deadline >= block.timestamp, "Router: EXPIRED");
-        require(path.length >= 2, "Router: INVALID_PATH");
+    // ---------- INTERNAL SWAP ----------
+    function _swap(uint256[] memory amounts, address[] calldata path, address _to) internal {
+        uint len = path.length;
+        for (uint i = 0; i < len - 1; i++) {
+            address input = path[i];
+            address output = path[i + 1];
 
-        amounts = UniswapV2Library.getAmountsIn(factory, amountOut, path);
-        require(amounts[0] <= amountInMax, "Router: EXCESSIVE_INPUT_AMOUNT");
+            address pair = UniswapV2Library.pairFor(factory, input, output);
+            (address token0, ) = UniswapV2Library.sortTokens(input, output);
 
-        address firstPair = UniswapV2Library.pairFor(factory, path[0], path[1]);
-        require(firstPair != address(0), "Router: PAIR_NOT_EXIST");
+            uint256 amountOut = amounts[i + 1];
+            uint256 amount0Out = input == token0 ? 0 : amountOut;
+            uint256 amount1Out = input == token0 ? amountOut : 0;
 
-        // pull exact required input from user to first pair
-        TransferHelper.safeTransferFrom(path[0], msg.sender, firstPair, amounts[0]);
+            address recipient = i < len - 2 ? UniswapV2Library.pairFor(factory, output, path[i + 2]) : _to;
 
-        _swap(amounts, path, to);
+            Pair(pair).swap(amount0Out, amount1Out, recipient);
+        }
     }
 
-    /// @notice Spend up to `msg.value` ETH to receive exactly `amountOut` of the last token (path[0] must be WETH)
-    function swapETHForExactTokens(
-        uint256 amountOut,
-        address[] calldata path,
-        address to,
-        uint256 deadline
-    ) external payable nonReentrant returns (uint256[] memory amounts) {
-        require(deadline >= block.timestamp, "Router: EXPIRED");
-        require(path.length >= 2, "Router: INVALID_PATH");
-        require(path[0] == WETH, "Router: FIRST_TOKEN_MUST_BE_WETH");
-
-        amounts = UniswapV2Library.getAmountsIn(factory, amountOut, path);
-        uint256 requiredWETH = amounts[0];
-        require(requiredWETH <= msg.value, "Router: INSUFFICIENT_ETH");
-
-        // wrap required ETH and send to first pair
-        IWETH(WETH).deposit{value: requiredWETH}();
-        address firstPair = UniswapV2Library.pairFor(factory, path[0], path[1]);
-        TransferHelper.safeTransfer(WETH, firstPair, requiredWETH);
-
-        _swap(amounts, path, to);
-
-        // refund leftover ETH to sender
-        uint256 refund = msg.value - requiredWETH;
-        if (refund > 0) _refundETH(msg.sender, refund);
-    }
-
-    /// @notice Spend up to `amountInMax` of path[0] to receive exactly `amountOut` ETH (last token must be WETH)
-    function swapTokensForExactETH(
-        uint256 amountOut,
-        uint256 amountInMax,
-        address[] calldata path,
-        address to,
-        uint256 deadline
-    ) external nonReentrant returns (uint256[] memory amounts) {
-        require(deadline >= block.timestamp, "Router: EXPIRED");
-        require(path.length >= 2, "Router: INVALID_PATH");
-        require(path[path.length - 1] == WETH, "Router: LAST_TOKEN_MUST_BE_WETH");
-
-        amounts = UniswapV2Library.getAmountsIn(factory, amountOut, path);
-        require(amounts[0] <= amountInMax, "Router: EXCESSIVE_INPUT_AMOUNT");
-
-        address firstPair = UniswapV2Library.pairFor(factory, path[0], path[1]);
-        require(firstPair != address(0), "Router: PAIR_NOT_EXIST");
-
-        // pull required input tokens to first pair
-        TransferHelper.safeTransferFrom(path[0], msg.sender, firstPair, amounts[0]);
-
-        // perform swaps with final recipient being this router so we can unwrap
-        _swap(amounts, path, address(this));
-
-        // unwrap WETH to ETH and send to `to`
-        uint256 amountWETH = amounts[amounts.length - 1];
-        IWETH(WETH).withdraw(amountWETH);
-        TransferHelper.safeTransferETH(to, amountWETH);
-    }
-
-
-    // ----------------- HELPERS / QUERIES -----------------
-
-    function quote(uint256 amountA, uint256 reserveA, uint256 reserveB) external pure returns (uint256) {
-        return UniswapV2Library.quote(amountA, reserveA, reserveB);
-    }
-
-    function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory amounts) {
+    // Add these at the end of Router.sol
+    function getAmountsOut(uint256 amountIn, address[] calldata path) public view returns (uint256[] memory amounts) {
         return UniswapV2Library.getAmountsOut(factory, amountIn, path);
     }
 
-    function getAmountsIn(uint256 amountOut, address[] calldata path) external view returns (uint256[] memory amounts) {
+    function getAmountsIn(uint256 amountOut, address[] calldata path) public view returns (uint256[] memory amounts) {
         return UniswapV2Library.getAmountsIn(factory, amountOut, path);
     }
 }

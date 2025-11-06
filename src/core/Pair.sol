@@ -126,32 +126,31 @@ contract Pair is ERC20, ReentrancyGuard {
     function swap(uint256 amount0Out, uint256 amount1Out, address to) external nonReentrant {
         require(to != address(0), "Pair: INVALID_TO");
         require(amount0Out > 0 || amount1Out > 0, "Pair: INSUFFICIENT_OUTPUT_AMOUNT");
-
-        (uint112 _reserve0, uint112 _reserve1,) = getReserves();
+    
+        (uint112 _reserve0, uint112 _reserve1, ) = getReserves();
         require(amount0Out < _reserve0 && amount1Out < _reserve1, "Pair: INSUFFICIENT_LIQUIDITY");
-
+    
         if (amount0Out > 0) _safeTransfer(token0, to, amount0Out);
         if (amount1Out > 0) _safeTransfer(token1, to, amount1Out);
-
+    
         uint256 balance0 = IERC20(token0).balanceOf(address(this));
         uint256 balance1 = IERC20(token1).balanceOf(address(this));
-
+    
         uint256 amount0In = balance0 > (_reserve0 - amount0Out) ? balance0 - (_reserve0 - amount0Out) : 0;
         uint256 amount1In = balance1 > (_reserve1 - amount1Out) ? balance1 - (_reserve1 - amount1Out) : 0;
-
         require(amount0In > 0 || amount1In > 0, "Pair: INSUFFICIENT_INPUT_AMOUNT");
-
-        // apply fee & invariant check:
-        uint256 balance0Adjusted = (balance0 * FEE_NUM) - (amount0In * (FEE_DEN - FEE_NUM));
-        uint256 balance1Adjusted = (balance1 * FEE_NUM) - (amount1In * (FEE_DEN - FEE_NUM));
-
-        require(balance0Adjusted * balance1Adjusted >= uint256(_reserve0) * uint256(_reserve1) * (FEE_NUM * FEE_NUM),
-            "Pair: K");
-
+    
+        uint256 balance0Adjusted = balance0 * FEE_DEN - amount0In * (FEE_DEN - FEE_NUM);
+        uint256 balance1Adjusted = balance1 * FEE_DEN - amount1In * (FEE_DEN - FEE_NUM);
+        require(
+            balance0Adjusted * balance1Adjusted >= uint256(_reserve0) * uint256(_reserve1) * (FEE_DEN ** 2),
+            "Pair: K"
+        );
+    
         _update(uint112(balance0), uint112(balance1));
-
         emit Swap(msg.sender, amount0In, amount1In, amount0Out, amount1Out, to);
     }
+
 
     /// @notice Force reserves to match balances
     function sync() external {
